@@ -32,7 +32,7 @@ config_schema:
       description: "Poe API key for narrator model access"
     narrator_model:
       type: string
-      default: "Claude-Sonnet-4"
+      default: "GPT-5-nano"
       description: "Poe model to use for narration"
     campus_name:
       type: string

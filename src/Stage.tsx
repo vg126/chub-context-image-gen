@@ -50,7 +50,7 @@ export class Stage extends StageBase<InitStateType, ChatStateType, MessageStateT
         
         // Initialize narrator configuration
         this.poeApiKey = config?.poe_api_key || "";
-        this.narratorModel = config?.narrator_model || "Claude-Sonnet-4";
+        this.narratorModel = config?.narrator_model || "GPT-5-nano";
         this.campusName = config?.campus_name || "National Law University";
         this.narrativeStyle = config?.narrative_style || "detailed";
         
