@@ -1,31 +1,17 @@
-# Logs
-logs
-*.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
-lerna-debug.log*
-
-node_modules
-dist
-dist-ssr
-*.local
-types/
-# Editor directories and files
-.vscode/*
-!.vscode/extensions.json
-!.vscode/stages.json
-.idea
-.DS_Store
-*.suo
-*.ntvs*
-*.njsproj
-*.sln
-*.sw?
-.idea/
-*.zip
+# Dependencies
+node_modules/
 dist/
-creation.json
-*.trash
-*.tgz
+
+# Environment variables and tokens
+*.env
+chub_tokens.env
+secret*.env
+
+# Build outputs
+*.log
+.DS_Store
+.vscode/
+
+# Temporary files
+*.tmp
+*.temp
