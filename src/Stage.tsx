@@ -12,7 +12,16 @@ type MessageStateType = {
     last_narrative?: string;
     scene_context?: any;
     narrator_active?: boolean;
+    message_history?: ConversationMessage[];
 };
+
+// Message history tracking
+interface ConversationMessage {
+    content: string;
+    isUser: boolean;
+    timestamp: number;
+    messageId?: string;
+}
 
 type ConfigType = {
     // Legacy narrator settings (optional)
@@ -78,6 +87,9 @@ export class Stage extends StageBase<InitStateType, ChatStateType, MessageStateT
     // Visual Scene Composer state
     visualState: VisualComposerState;
     
+    // Current message state for tracking
+    private currentMessageState: MessageStateType;
+    
     // Configuration
     private poeApiKey: string;
     private chubApiKey: string;
@@ -109,6 +121,9 @@ export class Stage extends StageBase<InitStateType, ChatStateType, MessageStateT
         this.narratorModel = config?.narrator_model || "GPT-5-nano";
         this.campusName = config?.campus_name || "National Law University";
         this.narrativeStyle = config?.narrative_style || "detailed";
+        
+        // Initialize current message state
+        this.currentMessageState = messageState || {};
         
         // Initialize Visual Scene Composer state
         this.visualState = {
@@ -152,15 +167,20 @@ export class Stage extends StageBase<InitStateType, ChatStateType, MessageStateT
     // Legacy narrator functions removed - Visual Scene Composer only
 
     async beforePrompt(userMessage: Message): Promise<Partial<StageResponse<ChatStateType, MessageStateType>>> {
-        // NO AUTO-GENERATION - Store context for on-demand use only
+        // Store user message in history for context tracking
         const { content } = userMessage;
+        const updatedHistory = this.addMessageToHistory(content, true);
+        
+        // Update internal state
+        this.currentMessageState = {
+            scene_context: { lastUserMessage: content },
+            narrator_active: false,
+            message_history: updatedHistory
+        };
         
         return {
             stageDirections: null,
-            messageState: {
-                scene_context: { lastUserMessage: content },
-                narrator_active: false
-            },
+            messageState: this.currentMessageState,
             modifiedMessage: null,
             systemMessage: null,
             error: null,
@@ -169,17 +189,23 @@ export class Stage extends StageBase<InitStateType, ChatStateType, MessageStateT
     }
 
     async afterResponse(botMessage: Message): Promise<Partial<StageResponse<ChatStateType, MessageStateType>>> {
-        // NO AUTO-GENERATION - Store context for on-demand use only  
+        // Store bot message in history for context tracking
         const { content } = botMessage;
+        const updatedHistory = this.addMessageToHistory(content, false);
+        
+        // Update internal state
+        this.currentMessageState = {
+            scene_context: { 
+                lastBotMessage: content,
+                messageCount: updatedHistory.length
+            },
+            narrator_active: false,
+            message_history: updatedHistory
+        };
         
         return {
             stageDirections: null,
-            messageState: {
-                scene_context: { 
-                    lastBotMessage: content
-                },
-                narrator_active: false
-            },
+            messageState: this.currentMessageState,
             modifiedMessage: null,
             systemMessage: null,
             error: null,
@@ -525,31 +551,98 @@ export class Stage extends StageBase<InitStateType, ChatStateType, MessageStateT
     }
 
     private async getRecentMessages(count: number): Promise<Message[]> {
-        // Get recent messages from chat history
-        // This would typically come from the stage's message history
-        // For now, return empty array - will implement based on actual message access
-        return [];
+        // Get recent messages from manually tracked history
+        const messageHistory = this.getCurrentMessageHistory();
+        
+        // Convert our ConversationMessage format to Message format
+        return messageHistory
+            .slice(-count) // Get last 'count' messages
+            .map((msg: ConversationMessage) => ({
+                content: msg.content,
+                authorId: msg.isUser ? 'user' : 'assistant', 
+                timestamp: msg.timestamp,
+                anonymizedId: 'msg-' + msg.timestamp,
+                isBot: !msg.isUser,
+                promptForId: '',
+                identity: msg.isUser ? 'user' : 'bot',
+                isMain: false
+            }) as Message);
+    }
+
+    private getCurrentMessageHistory(): ConversationMessage[] {
+        // Access messageState from current instance state
+        return this.currentMessageState?.message_history || [];
+    }
+
+    private addMessageToHistory(content: string, isUser: boolean): ConversationMessage[] {
+        const currentHistory = this.getCurrentMessageHistory();
+        const newMessage: ConversationMessage = {
+            content,
+            isUser,
+            timestamp: Date.now()
+        };
+        
+        // Add new message and keep only last 20 messages for performance
+        const updatedHistory = [...currentHistory, newMessage].slice(-20);
+        return updatedHistory;
     }
 
     private extractCharacters(text: string): string[] {
         const characters: string[] = [];
         
-        // Look for common character indicators
+        // Enhanced patterns for roleplay/conversation text
         const characterPatterns = [
-            /\b([A-Z][a-z]+)\s+(said|says|asked|replied|whispered|shouted)/g,
-            /\b([A-Z][a-z]+)\s+(walked|ran|smiled|frowned|looked|turned)/g,
+            // Speech patterns
+            /\b([A-Z][a-z]+)\s+(said|says|asked|replied|whispered|shouted|speaks|calls|answers)/gi,
+            // Action patterns  
+            /\b([A-Z][a-z]+)\s+(walked|ran|smiled|frowned|looked|turned|sits|stands|moves|approaches|enters|leaves)/gi,
+            // Possessive patterns
             /\b([A-Z][a-z]+)'s\s+/g,
-            /\bprofessor\s+([A-Z][a-z]+)/gi,
-            /\bdr\.?\s+([A-Z][a-z]+)/gi,
-            /\bmr\.?\s+([A-Z][a-z]+)/gi,
-            /\bms\.?\s+([A-Z][a-z]+)/gi
+            // Roleplay patterns (common in chat)
+            /^\*([A-Z][a-z]+)\s+/gm, // *Character action*
+            /\[([A-Z][a-z]+)\]/gi, // [Character name]
+            /\b([A-Z][a-z]+):\s/gi, // Character: dialogue
+            // Title patterns
+            /\b(professor|prof|dr|doctor|mr|ms|mrs)\s+([A-Z][a-z]+)/gi,
+            // You/your patterns (detect if referring to a named character)
+            /you\s+(are|were)\s+([A-Z][a-z]+)/gi,
+            // Character descriptions
+            /\b([A-Z][a-z]+)\s+(is|was)\s+(a|an|the)/gi
         ];
 
-        characterPatterns.forEach(pattern => {
+        characterPatterns.forEach((pattern, index) => {
             const matches = text.matchAll(pattern);
             for (const match of matches) {
-                const name = match[1];
-                if (name && name.length > 2 && !characters.includes(name)) {
+                // Different capture groups for different patterns
+                let name = match[1];
+                if (index === 6) { // Title patterns have name in group 2
+                    name = match[2];
+                }
+                
+                // Filter out common false positives
+                const excludeWords = ['the', 'and', 'but', 'for', 'are', 'was', 'you', 'your', 'my', 'his', 'her', 'their', 'this', 'that', 'with', 'have', 'been', 'will', 'can', 'could', 'would', 'should'];
+                
+                if (name && 
+                    name.length > 2 && 
+                    name.length < 20 && 
+                    !excludeWords.includes(name.toLowerCase()) &&
+                    !characters.includes(name)) {
+                    characters.push(name);
+                }
+            }
+        });
+
+        // Also extract from message structure if available - look for consistent speakers
+        const messageHistory = this.getCurrentMessageHistory();
+        const recentMessages = messageHistory.slice(-6); // Last 6 messages
+        
+        // Look for patterns like "*Character* does something" or "Character: says something"
+        recentMessages.forEach(msg => {
+            const content = msg.content;
+            const roleplayMatches = content.match(/^\*?([A-Z][a-z]{2,15})\*?\s+(does|is|was|looks|feels|thinks|walks|runs|sits|stands|says|whispers|shouts)/i);
+            if (roleplayMatches && roleplayMatches[1]) {
+                const name = roleplayMatches[1];
+                if (!characters.includes(name)) {
                     characters.push(name);
                 }
             }
@@ -561,10 +654,14 @@ export class Stage extends StageBase<InitStateType, ChatStateType, MessageStateT
     private extractLocation(text: string): string {
         const locationKeywords = {
             'classroom': 'classroom',
-            'library': 'library',
+            'library': 'library', 
             'cafeteria': 'cafeteria',
+            'cafe': 'cafe',
+            'restaurant': 'restaurant',
             'dormitory': 'dormitory',
             'dorm': 'dormitory',
+            'room': 'room',
+            'bedroom': 'bedroom',
             'office': 'office',
             'campus': 'university campus',
             'courtyard': 'courtyard',
@@ -572,16 +669,62 @@ export class Stage extends StageBase<InitStateType, ChatStateType, MessageStateT
             'laboratory': 'laboratory',
             'lab': 'laboratory',
             'garden': 'garden',
+            'park': 'park',
             'hallway': 'hallway',
             'corridor': 'corridor',
             'rooftop': 'rooftop',
             'parking': 'parking lot',
             'field': 'sports field',
-            'gym': 'gymnasium'
+            'gym': 'gymnasium',
+            'kitchen': 'kitchen',
+            'bathroom': 'bathroom',
+            'balcony': 'balcony',
+            'terrace': 'terrace',
+            'street': 'street',
+            'outside': 'outdoors',
+            'indoor': 'indoors',
+            'home': 'home',
+            'house': 'house',
+            'apartment': 'apartment',
+            'store': 'store',
+            'shop': 'shop',
+            'mall': 'shopping mall',
+            'hospital': 'hospital',
+            'clinic': 'clinic',
+            'beach': 'beach',
+            'forest': 'forest',
+            'mountain': 'mountain'
         };
 
+        // Check recent messages for location context
+        const messageHistory = this.getCurrentMessageHistory();
+        const recentText = messageHistory.slice(-3).map(m => m.content).join(' ').toLowerCase();
+        const combinedText = (text + ' ' + recentText).toLowerCase();
+
+        // Look for location phrases
+        const locationPatterns = [
+            /\b(in|at|inside|outside|near|by)\s+(the\s+)?([a-z]+(?:\s+[a-z]+)*)/gi,
+            /\bwe're\s+(in|at|inside)\s+(the\s+)?([a-z]+)/gi,
+            /\bgoing\s+to\s+(the\s+)?([a-z]+)/gi,
+            /\bentered?\s+(the\s+)?([a-z]+)/gi,
+            /\blocation:\s*([a-z]+(?:\s+[a-z]+)*)/gi
+        ];
+
+        for (const pattern of locationPatterns) {
+            const matches = combinedText.matchAll(pattern);
+            for (const match of matches) {
+                const location = match[match.length - 1]; // Get the last capture group
+                for (const [keyword, mappedLocation] of Object.entries(locationKeywords)) {
+                    if (location && location.includes(keyword)) {
+                        return mappedLocation;
+                    }
+                }
+            }
+        }
+
+        // Fallback to simple keyword matching
         for (const [keyword, location] of Object.entries(locationKeywords)) {
-            if (text.includes(keyword)) {
+            if (combinedText.includes(keyword)) {
                 return location;
             }
         }
