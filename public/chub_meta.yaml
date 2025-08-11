@@ -89,3 +89,6 @@ ratings_disabled: false
 # github_path will be added if it does not exist. It is the URL of the repo.
 github_path: 'https://github.com/vg126/chub-context-image-gen'
 
+
+extension_id: 'chub-context-image-gen-0a01db91d638'
+
