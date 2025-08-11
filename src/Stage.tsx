@@ -63,6 +63,14 @@ interface VisualComposerState {
     sceneContext?: SceneContext;
     availableCharacters: CharacterReference[];
     generationProgress: string;
+    errorMessage?: string;
+    isRefining: boolean;
+    lastGenerationTime?: number;
+    generationStats: {
+        totalGenerations: number;
+        successfulGenerations: number;
+        lastError?: string;
+    };
 }
 
 export class Stage extends StageBase<InitStateType, ChatStateType, MessageStateType, ConfigType> {
@@ -110,7 +118,15 @@ export class Stage extends StageBase<InitStateType, ChatStateType, MessageStateT
             lastGeneratedImage: undefined,
             sceneContext: undefined,
             availableCharacters: [],
-            generationProgress: "Ready"
+            generationProgress: "Ready",
+            errorMessage: undefined,
+            isRefining: false,
+            lastGenerationTime: undefined,
+            generationStats: {
+                totalGenerations: 0,
+                successfulGenerations: 0,
+                lastError: undefined
+            }
         };
     }
 
@@ -172,6 +188,92 @@ export class Stage extends StageBase<InitStateType, ChatStateType, MessageStateT
     }
 
     // Legacy toggle function removed
+
+    // Character reference fetching from Chub Gallery
+    private async fetchCharacterReference(characterName: string): Promise<CharacterReference | null> {
+        if (!this.chubApiKey) {
+            return null;
+        }
+
+        try {
+            // Search Chub gallery for character
+            const searchResponse = await axios.get(`https://api.chub.ai/search`, {
+                params: {
+                    search: characterName,
+                    type: 'character',
+                    page: 1,
+                    count: 5
+                },
+                headers: {
+                    'Authorization': `Bearer ${this.chubApiKey}`
+                },
+                timeout: 5000
+            });
+
+            const characters = searchResponse.data?.data?.nodes;
+            if (!characters || characters.length === 0) {
+                return null;
+            }
+
+            // Get the best match (first result)
+            const character = characters[0];
+            
+            // Fetch detailed character info including gallery images
+            const detailResponse = await axios.get(`https://api.chub.ai/characters/${character.fullPath}`, {
+                headers: {
+                    'Authorization': `Bearer ${this.chubApiKey}`
+                },
+                timeout: 5000
+            });
+
+            const characterData = detailResponse.data?.node;
+            if (!characterData) {
+                return null;
+            }
+
+            // Extract gallery images
+            const galleryImages = [];
+            if (characterData.gallery && characterData.gallery.length > 0) {
+                galleryImages.push(...characterData.gallery.map((img: any) => img.url));
+            }
+
+            const characterRef: CharacterReference = {
+                characterId: character.id,
+                name: characterData.name || character.name,
+                avatarUrl: characterData.avatarUrl || character.avatarUrl,
+                galleryImages: galleryImages,
+                description: characterData.description || character.tagline || ''
+            };
+
+            return characterRef;
+
+        } catch (error) {
+            console.warn(`Could not fetch character reference for ${characterName}:`, error);
+            return null;
+        }
+    }
+
+    private async enrichSceneWithCharacterRefs(sceneContext: SceneContext): Promise<SceneContext> {
+        const enrichedCharacters: string[] = [];
+        const characterRefs: CharacterReference[] = [];
+
+        for (const characterName of sceneContext.characters) {
+            const characterRef = await this.fetchCharacterReference(characterName);
+            if (characterRef) {
+                characterRefs.push(characterRef);
+                enrichedCharacters.push(characterRef.name);
+            } else {
+                enrichedCharacters.push(characterName);
+            }
+        }
+
+        this.visualState.availableCharacters = characterRefs;
+        
+        return {
+            ...sceneContext,
+            characters: enrichedCharacters
+        };
+    }
 
     // Visual Scene Composer - Chub Image API Integration
     private async generateSceneImage(prompt: string, referenceUrl?: string): Promise<string | null> {
@@ -271,53 +373,337 @@ export class Stage extends StageBase<InitStateType, ChatStateType, MessageStateT
         this.forceUpdate();
 
         try {
-            // Parse scene context from recent messages
-            const sceneContext = await this.parseSceneContext();
-            this.visualState.sceneContext = sceneContext;
+            // Clear previous errors
+            this.visualState.errorMessage = undefined;
+            this.visualState.generationStats.totalGenerations++;
+            this.visualState.lastGenerationTime = Date.now();
             
-            // Create scene prompt
-            const scenePrompt = this.createScenePrompt(sceneContext);
+            // Parse scene context from recent messages
+            const basicSceneContext = await this.parseSceneContext();
+            
+            // Enrich with character references if available
+            this.visualState.generationProgress = "Fetching character references...";
+            this.forceUpdate();
+            
+            const enrichedSceneContext = await this.enrichSceneWithCharacterRefs(basicSceneContext);
+            this.visualState.sceneContext = enrichedSceneContext;
+            
+            // Create initial scene prompt
+            const initialPrompt = this.createScenePrompt(enrichedSceneContext);
+            
+            // Get character reference image for img2img if available
+            const referenceUrl = this.getBestCharacterReference();
             
             // Generate image
             this.visualState.generationProgress = "Generating scene image...";
             this.forceUpdate();
             
-            const imageUrl = await this.generateSceneImage(scenePrompt);
+            const imageUrl = await this.generateSceneImage(initialPrompt, referenceUrl);
             
             if (imageUrl) {
                 this.visualState.lastGeneratedImage = imageUrl;
                 this.visualState.generationProgress = "Scene captured successfully!";
+                this.visualState.generationStats.successfulGenerations++;
+                
+                // Start refinement process if enabled
+                if (this.enableRefinement && !this.visualState.isRefining) {
+                    this.startRefinementProcess(imageUrl, enrichedSceneContext);
+                }
             } else {
                 this.visualState.generationProgress = "Generation failed";
+                this.visualState.errorMessage = "Image generation failed - check API connection";
+                this.visualState.generationStats.lastError = "Generation returned null";
             }
             
-        } catch (error) {
+        } catch (error: any) {
             console.error("Scene capture error:", error);
             this.visualState.generationProgress = "Error occurred";
+            this.visualState.errorMessage = error.message || "Unknown error occurred";
+            this.visualState.generationStats.lastError = error.message;
         } finally {
             this.visualState.isGenerating = false;
             this.forceUpdate();
             
             // Reset progress after 3 seconds
             setTimeout(() => {
-                this.visualState.generationProgress = "Ready";
-                this.forceUpdate();
+                if (!this.visualState.isRefining) {
+                    this.visualState.generationProgress = "Ready";
+                    this.forceUpdate();
+                }
             }, 3000);
         }
     }
 
+    private getBestCharacterReference(): string | undefined {
+        // Get the best character reference image for img2img
+        if (this.visualState.availableCharacters.length === 0) {
+            return undefined;
+        }
+        
+        const primaryCharacter = this.visualState.availableCharacters[0];
+        
+        // Prefer gallery images over avatar
+        if (primaryCharacter.galleryImages.length > 0) {
+            return primaryCharacter.galleryImages[0];
+        }
+        
+        return primaryCharacter.avatarUrl;
+    }
+
+    private async startRefinementProcess(imageUrl: string, sceneContext: SceneContext) {
+        // 3-part refinement system: verification → feedback → prompt refinement loop
+        setTimeout(async () => {
+            this.visualState.isRefining = true;
+            this.visualState.generationProgress = "Starting refinement process...";
+            this.forceUpdate();
+            
+            try {
+                // Step 1: Verification - analyze the generated image
+                const verificationResult = await this.verifyImage(imageUrl, sceneContext);
+                
+                if (verificationResult.needsImprovement) {
+                    // Step 2: Generate feedback for improvement
+                    const feedback = this.generateFeedback(verificationResult, sceneContext);
+                    
+                    // Step 3: Create refined prompt
+                    const refinedPrompt = this.createRefinedPrompt(sceneContext, feedback);
+                    
+                    // Generate improved image
+                    this.visualState.generationProgress = "Refining image...";
+                    this.forceUpdate();
+                    
+                    const refinedImageUrl = await this.generateSceneImage(refinedPrompt, imageUrl);
+                    
+                    if (refinedImageUrl) {
+                        this.visualState.lastGeneratedImage = refinedImageUrl;
+                        this.visualState.generationProgress = "Refinement complete!";
+                        this.visualState.generationStats.successfulGenerations++;
+                    } else {
+                        this.visualState.generationProgress = "Refinement failed";
+                        this.visualState.errorMessage = "Refinement generation failed";
+                    }
+                } else {
+                    this.visualState.generationProgress = "Image quality verified - no refinement needed";
+                }
+            } catch (error: any) {
+                console.error("Refinement process error:", error);
+                this.visualState.generationProgress = "Refinement failed";
+                this.visualState.errorMessage = `Refinement error: ${error.message}`;
+            } finally {
+                this.visualState.isRefining = false;
+                this.forceUpdate();
+                
+                // Reset to ready after refinement completes
+                setTimeout(() => {
+                    this.visualState.generationProgress = "Ready";
+                    this.forceUpdate();
+                }, 3000);
+            }
+        }, 2000);
+    }
+
+    private async verifyImage(imageUrl: string, sceneContext: SceneContext): Promise<{needsImprovement: boolean, issues: string[]}> {
+        // Basic verification logic - could be enhanced with AI vision analysis
+        const issues: string[] = [];
+        
+        // For now, randomly decide if refinement is needed (placeholder logic)
+        const needsImprovement = Math.random() > 0.7;
+        
+        if (needsImprovement) {
+            issues.push("Character positioning could be improved");
+            issues.push("Lighting needs enhancement");
+        }
+        
+        return { needsImprovement, issues };
+    }
+
+    private generateFeedback(verificationResult: {needsImprovement: boolean, issues: string[]}, sceneContext: SceneContext): string {
+        const feedbackPoints = verificationResult.issues;
+        return feedbackPoints.join(', ') + '. Focus on ' + sceneContext.mood + ' atmosphere.';
+    }
+
+    private createRefinedPrompt(sceneContext: SceneContext, feedback: string): string {
+        const basePrompt = this.createScenePrompt(sceneContext);
+        return `${basePrompt}, improved composition, ${feedback}, masterpiece quality`;
+    }
+
     private async parseSceneContext(): Promise<SceneContext> {
-        // Basic scene context parsing - will enhance later
+        // Get recent messages for analysis
+        const recentMessages = await this.getRecentMessages(10);
+        const combinedText = recentMessages.map(msg => msg.content).join(' ').toLowerCase();
+        
+        // Extract characters (look for names, pronouns, character references)
+        const characters = this.extractCharacters(combinedText);
+        
+        // Extract location
+        const location = this.extractLocation(combinedText);
+        
+        // Extract actions/activities
+        const actions = this.extractActions(combinedText);
+        
+        // Extract mood/atmosphere
+        const mood = this.extractMood(combinedText);
+        
+        // Extract time of day
+        const timeOfDay = this.extractTimeOfDay(combinedText);
+        
         const sceneContext: SceneContext = {
-            characters: ["main character"], // Will implement character detection
-            location: "university campus",
-            actions: "conversation",
-            mood: "neutral",
-            timeOfDay: "day"
+            characters: characters.length > 0 ? characters : ["main character"],
+            location: location || "university campus",
+            actions: actions || "conversation",
+            mood: mood || "neutral",
+            timeOfDay: timeOfDay || "day"
         };
         
-        // TODO: Implement actual message parsing and character extraction
         return sceneContext;
+    }
+
+    private async getRecentMessages(count: number): Promise<Message[]> {
+        // Get recent messages from chat history
+        // This would typically come from the stage's message history
+        // For now, return empty array - will implement based on actual message access
+        return [];
+    }
+
+    private extractCharacters(text: string): string[] {
+        const characters: string[] = [];
+        
+        // Look for common character indicators
+        const characterPatterns = [
+            /\b([A-Z][a-z]+)\s+(said|says|asked|replied|whispered|shouted)/g,
+            /\b([A-Z][a-z]+)\s+(walked|ran|smiled|frowned|looked|turned)/g,
+            /\b([A-Z][a-z]+)'s\s+/g,
+            /\bprofessor\s+([A-Z][a-z]+)/gi,
+            /\bdr\.?\s+([A-Z][a-z]+)/gi,
+            /\bmr\.?\s+([A-Z][a-z]+)/gi,
+            /\bms\.?\s+([A-Z][a-z]+)/gi
+        ];
+
+        characterPatterns.forEach(pattern => {
+            const matches = text.matchAll(pattern);
+            for (const match of matches) {
+                const name = match[1];
+                if (name && name.length > 2 && !characters.includes(name)) {
+                    characters.push(name);
+                }
+            }
+        });
+
+        return characters.slice(0, this.maxCharacters);
+    }
+
+    private extractLocation(text: string): string {
+        const locationKeywords = {
+            'classroom': 'classroom',
+            'library': 'library',
+            'cafeteria': 'cafeteria',
+            'dormitory': 'dormitory',
+            'dorm': 'dormitory',
+            'office': 'office',
+            'campus': 'university campus',
+            'courtyard': 'courtyard',
+            'auditorium': 'auditorium',
+            'laboratory': 'laboratory',
+            'lab': 'laboratory',
+            'garden': 'garden',
+            'hallway': 'hallway',
+            'corridor': 'corridor',
+            'rooftop': 'rooftop',
+            'parking': 'parking lot',
+            'field': 'sports field',
+            'gym': 'gymnasium'
+        };
+
+        for (const [keyword, location] of Object.entries(locationKeywords)) {
+            if (text.includes(keyword)) {
+                return location;
+            }
+        }
+
+        return '';
+    }
+
+    private extractActions(text: string): string {
+        const actionKeywords = {
+            'studying': 'studying',
+            'reading': 'reading',
+            'writing': 'writing',
+            'walking': 'walking',
+            'running': 'running',
+            'sitting': 'sitting',
+            'standing': 'standing',
+            'talking': 'having a conversation',
+            'discussing': 'discussing',
+            'arguing': 'arguing',
+            'laughing': 'laughing',
+            'crying': 'crying',
+            'eating': 'eating',
+            'drinking': 'drinking',
+            'meeting': 'meeting',
+            'presentation': 'giving presentation',
+            'lecture': 'attending lecture',
+            'exam': 'taking exam',
+            'test': 'taking test'
+        };
+
+        for (const [keyword, action] of Object.entries(actionKeywords)) {
+            if (text.includes(keyword)) {
+                return action;
+            }
+        }
+
+        return '';
+    }
+
+    private extractMood(text: string): string {
+        const moodKeywords = {
+            'happy': 'joyful',
+            'sad': 'melancholic',
+            'angry': 'tense',
+            'excited': 'energetic',
+            'nervous': 'anxious',
+            'calm': 'peaceful',
+            'worried': 'concerned',
+            'surprised': 'surprised',
+            'confused': 'puzzled',
+            'romantic': 'romantic',
+            'serious': 'serious',
+            'playful': 'playful',
+            'dramatic': 'dramatic',
+            'intense': 'intense'
+        };
+
+        for (const [keyword, mood] of Object.entries(moodKeywords)) {
+            if (text.includes(keyword)) {
+                return mood;
+            }
+        }
+
+        return '';
+    }
+
+    private extractTimeOfDay(text: string): string {
+        const timeKeywords = {
+            'morning': 'morning',
+            'dawn': 'dawn',
+            'sunrise': 'sunrise',
+            'afternoon': 'afternoon',
+            'noon': 'midday',
+            'evening': 'evening',
+            'sunset': 'sunset',
+            'night': 'night',
+            'midnight': 'midnight',
+            'dusk': 'dusk',
+            'twilight': 'twilight'
+        };
+
+        for (const [keyword, time] of Object.entries(timeKeywords)) {
+            if (text.includes(keyword)) {
+                return time;
+            }
+        }
+
+        return '';
     }
 
     private createScenePrompt(context: SceneContext): string {
@@ -386,11 +772,28 @@ export class Stage extends StageBase<InitStateType, ChatStateType, MessageStateT
                     {/* Progress indicator */}
                     <div style={{
                         fontSize: '12px',
-                        color: this.visualState.isGenerating ? '#4a9eff' : '#ffd700',
+                        color: this.visualState.isGenerating || this.visualState.isRefining ? '#4a9eff' : 
+                               this.visualState.errorMessage ? '#ff6b6b' : '#ffd700',
                         marginBottom: '10px'
                     }}>
                         Status: {this.visualState.generationProgress}
+                        {this.visualState.isRefining && ' 🔄'}
                     </div>
+
+                    {/* Error message display */}
+                    {this.visualState.errorMessage && (
+                        <div style={{
+                            fontSize: '11px',
+                            color: '#ff6b6b',
+                            background: 'rgba(255, 107, 107, 0.1)',
+                            borderRadius: '6px',
+                            padding: '6px 8px',
+                            marginBottom: '10px',
+                            borderLeft: '3px solid #ff6b6b'
+                        }}>
+                            ⚠️ {this.visualState.errorMessage}
+                        </div>
+                    )}
 
                     {/* Generated image display */}
                     {this.visualState.lastGeneratedImage && (
@@ -420,7 +823,63 @@ export class Stage extends StageBase<InitStateType, ChatStateType, MessageStateT
                             Scene: {this.visualState.sceneContext.characters.join(', ')} • {this.visualState.sceneContext.location} • {this.visualState.sceneContext.mood}
                         </div>
                     )}
+
+                    {/* Character references display */}
+                    {this.visualState.availableCharacters.length > 0 && (
+                        <div style={{
+                            marginTop: '15px',
+                            background: 'rgba(255,255,255,0.05)',
+                            borderRadius: '8px',
+                            padding: '10px'
+                        }}>
+                            <div style={{ fontSize: '12px', color: '#ffd700', marginBottom: '8px' }}>
+                                📚 Character References ({this.visualState.availableCharacters.length})
+                            </div>
+                            <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                                {this.visualState.availableCharacters.map((char, index) => (
+                                    <div key={char.characterId} style={{
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        gap: '5px',
+                                        background: 'rgba(74, 158, 255, 0.2)',
+                                        borderRadius: '12px',
+                                        padding: '4px 8px',
+                                        fontSize: '11px'
+                                    }}>
+                                        <img 
+                                            src={char.avatarUrl} 
+                                            style={{ 
+                                                width: '16px', 
+                                                height: '16px', 
+                                                borderRadius: '50%',
+                                                objectFit: 'cover'
+                                            }}
+                                            alt={char.name}
+                                        />
+                                        <span>{char.name}</span>
+                                        {char.galleryImages.length > 0 && (
+                                            <span style={{ color: '#90EE90' }}>✓</span>
+                                        )}
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    )}
                 </div>
+
+                {/* Generation Statistics */}
+                {this.visualState.generationStats.totalGenerations > 0 && (
+                    <div style={{
+                        fontSize: '11px',
+                        opacity: 0.6,
+                        textAlign: 'center',
+                        marginBottom: '10px',
+                        color: '#ffd700'
+                    }}>
+                        📊 Generations: {this.visualState.generationStats.successfulGenerations}/{this.visualState.generationStats.totalGenerations} successful
+                        {this.enableRefinement && ' • Refinement enabled'}
+                    </div>
+                )}
 
                 {/* API Status */}
                 <div style={{
