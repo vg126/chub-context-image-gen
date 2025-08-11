@@ -189,68 +189,12 @@ export class Stage extends StageBase<InitStateType, ChatStateType, MessageStateT
 
     // Legacy toggle function removed
 
-    // Character reference fetching from Chub Gallery
+    // Character reference fetching from Chub Gallery (disabled due to API format issues)
     private async fetchCharacterReference(characterName: string): Promise<CharacterReference | null> {
-        if (!this.chubApiKey) {
-            return null;
-        }
-
-        try {
-            // Search Chub gallery for character
-            const searchResponse = await axios.get(`https://api.chub.ai/search`, {
-                params: {
-                    search: characterName,
-                    type: 'character',
-                    page: 1,
-                    count: 5
-                },
-                headers: {
-                    'Authorization': `Bearer ${this.chubApiKey}`
-                },
-                timeout: 5000
-            });
-
-            const characters = searchResponse.data?.data?.nodes;
-            if (!characters || characters.length === 0) {
-                return null;
-            }
-
-            // Get the best match (first result)
-            const character = characters[0];
-            
-            // Fetch detailed character info including gallery images
-            const detailResponse = await axios.get(`https://api.chub.ai/characters/${character.fullPath}`, {
-                headers: {
-                    'Authorization': `Bearer ${this.chubApiKey}`
-                },
-                timeout: 5000
-            });
-
-            const characterData = detailResponse.data?.node;
-            if (!characterData) {
-                return null;
-            }
-
-            // Extract gallery images
-            const galleryImages = [];
-            if (characterData.gallery && characterData.gallery.length > 0) {
-                galleryImages.push(...characterData.gallery.map((img: any) => img.url));
-            }
-
-            const characterRef: CharacterReference = {
-                characterId: character.id,
-                name: characterData.name || character.name,
-                avatarUrl: characterData.avatarUrl || character.avatarUrl,
-                galleryImages: galleryImages,
-                description: characterData.description || character.tagline || ''
-            };
-
-            return characterRef;
-
-        } catch (error) {
-            console.warn(`Could not fetch character reference for ${characterName}:`, error);
-            return null;
-        }
+        // Skip character reference fetching for now due to API format mismatch
+        // This prevents 422 errors and allows basic text2img generation to work
+        console.log(`Skipping character reference fetch for: ${characterName}`);
+        return null;
     }
 
     private async enrichSceneWithCharacterRefs(sceneContext: SceneContext): Promise<SceneContext> {
@@ -290,7 +234,15 @@ export class Stage extends StageBase<InitStateType, ChatStateType, MessageStateT
             width: 1024,
             height: 1024,
             num_inference_steps: this.imageQuality === 'high' ? 50 : 30,
-            guidance_scale: 3.5
+            guidance_scale: 3.5,
+            seed: 0,
+            extension_source: "Visual Scene Composer",
+            chat_id: "stage",
+            uuid: this.generateUUID(),
+            mode: "standard",
+            sub_mode: "default",
+            parent_image: "",
+            item_id: ""
         };
 
         if (referenceUrl) {
@@ -302,7 +254,7 @@ export class Stage extends StageBase<InitStateType, ChatStateType, MessageStateT
             // Initial generation request
             const response = await axios.post(`${baseUrl}${endpoint}`, payload, {
                 headers: {
-                    'Authorization': `Bearer ${this.chubApiKey}`,
+                    'CH-API-KEY': this.chubApiKey,
                     'Content-Type': 'application/json'
                 },
                 timeout: 60000
@@ -330,7 +282,7 @@ export class Stage extends StageBase<InitStateType, ChatStateType, MessageStateT
                         request_type: "image"
                     }, {
                         headers: {
-                            'Authorization': `Bearer ${this.chubApiKey}`,
+                            'CH-API-KEY': this.chubApiKey,
                             'Content-Type': 'application/json'
                         },
                         timeout: 5000
@@ -708,6 +660,14 @@ export class Stage extends StageBase<InitStateType, ChatStateType, MessageStateT
 
     private createScenePrompt(context: SceneContext): string {
         return `${this.sceneStyle} scene: ${context.characters.join(' and ')} ${context.actions} at ${context.location}, ${context.mood} mood, ${context.timeOfDay} lighting, high quality, detailed`;
+    }
+
+    private generateUUID(): string {
+        return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+            const r = Math.random() * 16 | 0;
+            const v = c === 'x' ? r : (r & 0x3 | 0x8);
+            return v.toString(16);
+        });
     }
 
     private forceUpdate = () => {
