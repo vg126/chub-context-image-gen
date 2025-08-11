@@ -272,7 +272,13 @@ export class Stage extends StageBase<InitStateType, ChatStateType, MessageStateT
             
             console.log('Got generation UUID:', generationUuid);
 
-            // Poll for completion - extended for 2 minutes total
+            // Check if image is already complete in initial response
+            if (response.data.is_done && response.data.primary_image_path) {
+                console.log('Image completed immediately:', response.data.primary_image_path);
+                return response.data.primary_image_path;
+            }
+
+            // If not complete, poll for completion
             const maxAttempts = 60;
             const pollInterval = 2000;
 
@@ -295,17 +301,19 @@ export class Stage extends StageBase<InitStateType, ChatStateType, MessageStateT
                     });
 
                     const result = checkResponse.data;
-                    const status = result.status || result.state;
+                    console.log(`Poll attempt ${attempt}:`, result);
 
-                    if (status === 'completed') {
-                        const imageUrl = result.image_url || result.url;
+                    // Check multiple possible completion indicators
+                    if (result.is_done || result.status === 'completed' || result.state === 'completed') {
+                        const imageUrl = result.primary_image_path || result.image_url || result.url;
                         if (imageUrl) {
+                            console.log('Image completed via polling:', imageUrl);
                             return imageUrl;
                         }
                         if (result.images && result.images.length > 0) {
                             return result.images[0];
                         }
-                    } else if (status === 'failed' || status === 'error') {
+                    } else if (result.is_failed || result.status === 'failed' || result.state === 'error') {
                         console.error("Generation failed:", result);
                         return null;
                     }
