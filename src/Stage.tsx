@@ -168,8 +168,10 @@ export class Stage extends StageBase<InitStateType, ChatStateType, MessageStateT
 
     async beforePrompt(userMessage: Message): Promise<Partial<StageResponse<ChatStateType, MessageStateType>>> {
         // Store user message in history for context tracking
+        console.log('DEBUG: beforePrompt called with message:', userMessage.content);
         const { content } = userMessage;
         const updatedHistory = this.addMessageToHistory(content, true);
+        console.log('DEBUG: Updated history after beforePrompt:', updatedHistory.length, 'messages');
         
         // Update internal state
         this.currentMessageState = {
@@ -190,8 +192,10 @@ export class Stage extends StageBase<InitStateType, ChatStateType, MessageStateT
 
     async afterResponse(botMessage: Message): Promise<Partial<StageResponse<ChatStateType, MessageStateType>>> {
         // Store bot message in history for context tracking
+        console.log('DEBUG: afterResponse called with message:', botMessage.content);
         const { content } = botMessage;
         const updatedHistory = this.addMessageToHistory(content, false);
+        console.log('DEBUG: Updated history after afterResponse:', updatedHistory.length, 'messages');
         
         // Update internal state
         this.currentMessageState = {
@@ -520,24 +524,36 @@ export class Stage extends StageBase<InitStateType, ChatStateType, MessageStateT
     }
 
     private async parseSceneContext(): Promise<SceneContext> {
+        // DEBUG: Check message history
+        const messageHistory = this.getCurrentMessageHistory();
+        console.log('DEBUG: Message history length:', messageHistory.length);
+        console.log('DEBUG: Message history:', messageHistory);
+        
         // Get recent messages for analysis
         const recentMessages = await this.getRecentMessages(10);
+        console.log('DEBUG: Recent messages:', recentMessages);
         const combinedText = recentMessages.map(msg => msg.content).join(' ').toLowerCase();
+        console.log('DEBUG: Combined text for analysis:', combinedText);
         
         // Extract characters (look for names, pronouns, character references)
         const characters = this.extractCharacters(combinedText);
+        console.log('DEBUG: Extracted characters:', characters);
         
         // Extract location
         const location = this.extractLocation(combinedText);
+        console.log('DEBUG: Extracted location:', location);
         
         // Extract actions/activities
         const actions = this.extractActions(combinedText);
+        console.log('DEBUG: Extracted actions:', actions);
         
         // Extract mood/atmosphere
         const mood = this.extractMood(combinedText);
+        console.log('DEBUG: Extracted mood:', mood);
         
         // Extract time of day
         const timeOfDay = this.extractTimeOfDay(combinedText);
+        console.log('DEBUG: Extracted timeOfDay:', timeOfDay);
         
         const sceneContext: SceneContext = {
             characters: characters.length > 0 ? characters : ["main character"],
