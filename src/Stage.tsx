@@ -251,6 +251,8 @@ export class Stage extends StageBase<InitStateType, ChatStateType, MessageStateT
         }
 
         try {
+            console.log('Sending image generation request:', payload);
+            
             // Initial generation request
             const response = await axios.post(`${baseUrl}${endpoint}`, payload, {
                 headers: {
@@ -260,14 +262,18 @@ export class Stage extends StageBase<InitStateType, ChatStateType, MessageStateT
                 timeout: 60000
             });
 
+            console.log('Initial response:', response.data);
+            
             const generationUuid = response.data?.generation_uuid;
             if (!generationUuid) {
-                console.error("No generation UUID received");
+                console.error("No generation UUID received", response.data);
                 return null;
             }
+            
+            console.log('Got generation UUID:', generationUuid);
 
-            // Poll for completion
-            const maxAttempts = 30;
+            // Poll for completion - extended for 2 minutes total
+            const maxAttempts = 60;
             const pollInterval = 2000;
 
             for (let attempt = 1; attempt <= maxAttempts; attempt++) {
