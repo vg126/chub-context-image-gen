@@ -305,7 +305,7 @@ export class Stage extends StageBase<InitStateType, ChatStateType, MessageStateT
                     'Authorization': `Bearer ${this.chubApiKey}`,
                     'Content-Type': 'application/json'
                 },
-                timeout: 10000
+                timeout: 60000
             });
 
             const generationUuid = response.data?.generation_uuid;
