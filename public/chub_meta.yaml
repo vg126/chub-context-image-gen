@@ -1,10 +1,10 @@
-# NLU Narrator Stage Configuration
+# Visual Scene Composer Stage Configuration
 
 # The name of the stage.
-project_name: "NLU Universe Narrator"
+project_name: "Visual Scene Composer"
 
 # A short tagline to show in search.
-tagline: "Campus chronicler for Law Hearts & Hidden Connections universe"
+tagline: "Context-driven image generation with character references and scene parsing"
 
 # 'PUBLIC', 'PRIVATE', or 'UNLISTED'.
 visibility: 'PUBLIC'
@@ -16,32 +16,40 @@ position: 'ADJACENT'
 
 # Self-explanatory.
 tags:
- - 'Narrative'
- - 'Campus'
- - 'Chronicle'
- - 'University'
- - 'Legal'
+ - 'Image Generation'
+ - 'Scene Composer'
+ - 'Character References'
+ - 'Chub API'
+ - 'Visual'
 
 # The schema of any user-supplied config.
 config_schema:
   type: object
   properties:
-    poe_api_key:
+    chub_api_key:
       type: string
       default: ""
-      description: "Poe API key for narrator model access"
-    narrator_model:
+      description: "Chub API key for image generation"
+    image_api_provider:
       type: string
-      default: "GPT-5-nano"
-      description: "Poe model to use for narration"
-    campus_name:
+      default: "chub"
+      description: "Image API provider: chub or poe-flux"
+    image_quality:
       type: string
-      default: "National Law University"
-      description: "Campus setting name"
-    narrative_style:
+      default: "standard"
+      description: "Image quality: standard or high"
+    max_characters:
+      type: number
+      default: 3
+      description: "Maximum characters to include in scene"
+    scene_style:
       type: string
-      default: "detailed"
-      description: "Narrative detail level: brief, detailed, immersive"
+      default: "cinematic"
+      description: "Scene style: cinematic, anime, realistic, artistic"
+    enable_refinement:
+      type: boolean
+      default: false
+      description: "Enable 3-part refinement system for image improvement"
 
 # The schema of the state that you store.
 state_schema:
@@ -77,7 +85,5 @@ ratings_disabled: false
 
 # extension_id is automatically generated on push with a new project;
 #    you should not make or set this value.
-extension_id: 'nlu-narrator-stage-626ab7f374cf'
 
 # github_path will be added if it does not exist. It is the URL of the repo.
-github_path: 'https://github.com/vg126/stagey'
